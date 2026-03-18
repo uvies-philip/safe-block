@@ -1,0 +1,21 @@
+{
+  "name": "safeblock",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "mobile",
+    "backend"
+  ],
+  "scripts": {
+    "dev": "concurrently -n backend,mobile -c blue,magenta \"npm run dev:backend\" \"npm run dev:mobile\"",
+    "dev:web": "concurrently -n backend,mobile -c blue,magenta \"npm run dev:backend\" \"npm run dev:web --workspace mobile\"",
+    "dev:mobile": "node scripts/dev-mobile.cjs",
+    "dev:mobile:only": "npm run dev --workspace mobile",
+    "dev:backend": "npm run dev --workspace backend",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

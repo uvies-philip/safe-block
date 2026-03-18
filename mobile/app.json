@@ -1,0 +1,33 @@
+{
+  "expo": {
+    "name": "SafeBlock",
+    "slug": "safeblock",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "backgroundColor": "#121212"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": false
+    },
+    "android": {
+      "package": "com.safeblock.mobile",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION"
+      ]
+    },
+    "plugins": [
+      "expo-location",
+      "expo-notifications"
+    ],
+    "extra": {
+      "apiBaseUrl": "http://localhost:4000",
+      "googleMapsApiKey": ""
+    }
+  }
+}

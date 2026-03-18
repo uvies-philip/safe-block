@@ -1,0 +1,90 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum IncidentType {
+  ROBBERY
+  KIDNAPPING
+  FIRE
+  POLICE_EXTORTION
+  ROADBLOCK
+  ACCIDENT
+  SUSPICIOUS_ACTIVITY
+}
+
+enum SosStatus {
+  active
+  resolved
+}
+
+model User {
+  id                String           @id @default(uuid())
+  name              String
+  phone             String
+  email             String           @unique
+  photoUrl          String           @default("")
+  passwordHash      String
+  homeLatitude      Float?
+  homeLongitude     Float?
+  createdAt         DateTime         @default(now())
+  trustedContacts   TrustedContact[]
+  incidents         Incident[]
+  sosAlerts         SosAlert[]
+}
+
+model TrustedContact {
+  id           String   @id @default(uuid())
+  userId       String
+  contactName  String
+  phone        String
+  relationship String
+  createdAt    DateTime @default(now())
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Incident {
+  id          String       @id @default(uuid())
+  type        IncidentType
+  description String
+  reportedBy  String
+  latitude    Float
+  longitude   Float
+  timestamp   DateTime     @default(now())
+  verified    Boolean      @default(false)
+  upvotes     Int          @default(0)
+  reporter    User         @relation(fields: [reportedBy], references: [id], onDelete: Cascade)
+
+  @@index([latitude, longitude])
+  @@index([timestamp])
+}
+
+model SosAlert {
+  id         String    @id @default(uuid())
+  userId     String
+  latitude   Float
+  longitude  Float
+  timestamp  DateTime  @default(now())
+  status     SosStatus @default(active)
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status, timestamp])
+}
+
+model NotificationEvent {
+  id             String   @id @default(uuid())
+  category       String
+  message        String
+  recipientIds   String[]
+  metadata       Json
+  createdAt      DateTime @default(now())
+
+  @@index([createdAt])
+}

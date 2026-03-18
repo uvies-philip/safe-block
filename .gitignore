@@ -1,0 +1,15 @@
+node_modules/
+.env
+.env.*
+dist/
+coverage/
+.expo/
+.vscode/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+mobile/.expo/
+mobile/.expo-shared/
+backend/prisma/dev.db
