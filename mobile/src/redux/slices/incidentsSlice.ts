@@ -138,8 +138,17 @@ const incidentsSlice = createSlice({
         state.error = action.error.message ?? 'Unable to load digest feed';
       })
       .addCase(submitIncident.fulfilled, (state, action) => {
+        state.loading = false;
         state.items.unshift(action.payload);
         state.digestItems.unshift(action.payload);
+      })
+      .addCase(submitIncident.pending, (state) => {
+        state.loading = true;
+        state.error = null;
+      })
+      .addCase(submitIncident.rejected, (state, action) => {
+        state.loading = false;
+        state.error = action.error.message ?? 'Unable to submit incident';
       })
       // drafts
       .addCase(saveIncidentDraft.fulfilled, (state, action) => {

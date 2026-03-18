@@ -104,6 +104,7 @@ const recalculateTrustScore = (incident: Incident): number => {
 const CONSENSUS_RADIUS_KM = 0.3;
 const CONSENSUS_WINDOW_MINUTES = 90;
 const CONSENSUS_REPORTER_THRESHOLD = 3;
+const DUPLICATE_WINDOW_MS = 15_000;
 
 const calculateReporterCredibilityScore = async (userId: string) => {
   const authored = await prisma.incident.findMany({
@@ -220,12 +221,42 @@ const getTimeOfDayKey = (hour: number): 'morning' | 'afternoon' | 'evening' | 'n
 
 export const incidentService = {
   async submitIncident(userId: string, input: z.infer<typeof submitIncidentSchema>) {
+    const normalizedDescription = input.description.trim();
+    const duplicateCutoff = new Date(Date.now() - DUPLICATE_WINDOW_MS);
+    const nearbyTolerance = 0.00005;
+
+    const recentDuplicate = await prisma.incident.findFirst({
+      where: {
+        reportedBy: userId,
+        type: input.type as PrismaIncidentType,
+        description: normalizedDescription,
+        timestamp: {
+          gte: duplicateCutoff,
+        },
+        latitude: {
+          gte: input.location.latitude - nearbyTolerance,
+          lte: input.location.latitude + nearbyTolerance,
+        },
+        longitude: {
+          gte: input.location.longitude - nearbyTolerance,
+          lte: input.location.longitude + nearbyTolerance,
+        },
+      },
+      orderBy: {
+        timestamp: 'desc',
+      },
+    });
+
+    if (recentDuplicate) {
+      return toIncidentModel(recentDuplicate);
+    }
+
     const reporterCredibilityScore = await calculateReporterCredibilityScore(userId);
 
     const created = await prisma.incident.create({
       data: {
         type: input.type as PrismaIncidentType,
-        description: input.description,
+        description: normalizedDescription,
         reportedBy: userId,
         anonymous: input.anonymous ?? false,
         imageUri: input.imageUri,

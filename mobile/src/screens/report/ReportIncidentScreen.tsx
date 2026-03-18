@@ -41,6 +41,7 @@ export const ReportIncidentScreen = ({ navigation }: any) => {
   const [locationHint, setLocationHint] = useState('Detecting your location…');
   const [touched, setTouched] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [submittingNow, setSubmittingNow] = useState(false);
   const [draftSaved, setDraftSaved] = useState(false);
 
   useEffect(() => {
@@ -92,7 +93,7 @@ export const ReportIncidentScreen = ({ navigation }: any) => {
       ? `Add at least ${MIN_DESCRIPTION} characters so others can react safely.`
       : null;
 
-  const canSubmit = description.trim().length >= MIN_DESCRIPTION && !submitting && !submitted;
+  const canSubmit = description.trim().length >= MIN_DESCRIPTION && !submitting && !submittingNow && !submitted;
 
   const estimatedTime = useMemo(() => {
     if (description.trim().length >= MIN_DESCRIPTION) {
@@ -214,23 +215,30 @@ export const ReportIncidentScreen = ({ navigation }: any) => {
           </View>
 
           <AppButton
-            label={submitting ? 'Sending report…' : 'Send now'}
-            loading={submitting}
+            label={submitting || submittingNow ? 'Sending report…' : 'Send now'}
+            loading={submitting || submittingNow}
             disabled={!canSubmit}
             onPress={async () => {
               setTouched(true);
               if (!canSubmit) return;
-              await dispatch(
-                submitIncident({
-                  type,
-                  description: description.trim(),
-                  anonymous,
-                  imageUri: imageUri ?? undefined,
-                  location,
-                })
-              );
-              setSubmitted(true);
-              setTimeout(() => navigation.goBack(), 900);
+              setSubmittingNow(true);
+
+              try {
+                await dispatch(
+                  submitIncident({
+                    type,
+                    description: description.trim(),
+                    anonymous,
+                    imageUri: imageUri ?? undefined,
+                    location,
+                  })
+                ).unwrap();
+
+                setSubmitted(true);
+                setTimeout(() => navigation.goBack(), 900);
+              } finally {
+                setSubmittingNow(false);
+              }
             }}
             style={styles.button}
           />
