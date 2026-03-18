@@ -96,7 +96,7 @@ export const HomeScreen = ({ navigation }: any) => {
   });
 
   const myActiveAlert =
-    (sosState.activeAlert?.userId === userId ? sosState.activeAlert : null) ??
+    (sosState.activeAlert?.status === 'active' ? sosState.activeAlert : null) ??
     sosState.activeAlerts.find((e) => e.userId === userId && e.status === 'active') ??
     null;
   const nearbyAlerts = sosState.activeAlerts
@@ -201,6 +201,12 @@ export const HomeScreen = ({ navigation }: any) => {
           {sosState.warning ? (
             <View style={styles.warningCard}>
               <Text style={styles.warningText}>{sosState.warning}</Text>
+            </View>
+          ) : null}
+
+          {sosState.error ? (
+            <View style={styles.warningCard}>
+              <Text style={styles.warningText}>{sosState.error}</Text>
             </View>
           ) : null}
 

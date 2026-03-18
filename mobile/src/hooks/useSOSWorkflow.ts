@@ -17,7 +17,7 @@ export const useSOSWorkflow = ({ dispatch, workflowStatus, cancelSecondsLeft }: 
     }
 
     if (cancelSecondsLeft <= 0) {
-      dispatch(triggerSOS({ smsEnabled: true }));
+      dispatch(triggerSOS());
       return;
     }
 

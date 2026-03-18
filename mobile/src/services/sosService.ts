@@ -88,7 +88,7 @@ export const sosService = {
     let notificationFailed = false;
     let smsFailed = false;
     let firestoreFailed = false;
-    let nearbyAlertFailed = false;
+    const nearbyAlertFailed = false;
 
     if (alert) {
       try {
@@ -114,11 +114,6 @@ export const sosService = {
         firestoreFailed = true;
       }
 
-      try {
-        await api.post('/sos/nearby-alerts', { alertId: alert.id });
-      } catch {
-        nearbyAlertFailed = true;
-      }
     }
 
     return {
