@@ -13,12 +13,12 @@
     "preview": {
       "distribution": "internal",
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://api.your-domain.com"
+        "EXPO_PUBLIC_API_URL": "https://safeblock-backend.onrender.com"
       }
     },
     "production": {
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://api.your-domain.com"
+        "EXPO_PUBLIC_API_URL": "https://safeblock-backend.onrender.com"
       }
     }
   }
