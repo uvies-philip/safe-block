@@ -23,6 +23,18 @@ enum SosStatus {
   resolved
 }
 
+enum GuardianBadge {
+  NONE
+  BRONZE
+  SILVER
+  GOLD
+}
+
+enum SosResponderStatus {
+  coming
+  unable
+}
+
 model User {
   id                String           @id @default(uuid())
   name              String
@@ -32,6 +44,9 @@ model User {
   passwordHash      String
   homeLatitude      Float?
   homeLongitude     Float?
+  guardianAvailable Boolean          @default(false)
+  guardianVerificationBadge GuardianBadge @default(NONE)
+  guardianAssistCount Int            @default(0)
   createdAt         DateTime         @default(now())
   trustedContacts   TrustedContact[]
   incidents         Incident[]
@@ -55,11 +70,18 @@ model Incident {
   type        IncidentType
   description String
   reportedBy  String
+  anonymous   Boolean      @default(false)
+  imageUri    String?
   latitude    Float
   longitude   Float
   timestamp   DateTime     @default(now())
   verified    Boolean      @default(false)
   upvotes     Int          @default(0)
+  upvotedBy   String[]     @default([])
+  verificationCount Int    @default(0)
+  trustScore  Int          @default(40)
+  reporterCredibilityScore Int @default(50)
+  verifiedBy  String[]     @default([])
   reporter    User         @relation(fields: [reportedBy], references: [id], onDelete: Cascade)
 
   @@index([latitude, longitude])
@@ -69,13 +91,30 @@ model Incident {
 model SosAlert {
   id         String    @id @default(uuid())
   userId     String
+  requesterName String?
+  requesterPhone String?
   latitude   Float
   longitude  Float
   timestamp  DateTime  @default(now())
   status     SosStatus @default(active)
+  escalationLevel Int   @default(1)
   user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  responders SosResponder[]
 
   @@index([status, timestamp])
+}
+
+model SosResponder {
+  id         String            @id @default(uuid())
+  alertId    String
+  userId     String
+  status     SosResponderStatus
+  etaMinutes Int?
+  updatedAt  DateTime          @default(now())
+  alert      SosAlert          @relation(fields: [alertId], references: [id], onDelete: Cascade)
+
+  @@unique([alertId, userId])
+  @@index([alertId])
 }
 
 model NotificationEvent {

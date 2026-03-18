@@ -1,9 +1,8 @@
 import { z } from 'zod';
 
 import { TrustedContact } from '../models/types';
-import { createId } from '../utils/id';
 import { AppError } from '../utils/errors';
-import { store } from './store';
+import { prisma } from './prisma';
 
 export const addContactSchema = z.object({
   contactName: z.string().min(2),
@@ -12,42 +11,51 @@ export const addContactSchema = z.object({
 });
 
 export const contactService = {
-  list(userId: string) {
-    return store.contacts.filter((contact) => contact.userId === userId);
+  async list(userId: string) {
+    const contacts = await prisma.trustedContact.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return contacts.map((contact) => ({
+      id: contact.id,
+      userId: contact.userId,
+      contactName: contact.contactName,
+      phone: contact.phone,
+      relationship: contact.relationship,
+      createdAt: contact.createdAt.toISOString(),
+    }));
   },
 
-  add(userId: string, input: z.infer<typeof addContactSchema>) {
-    const contact: TrustedContact = {
-      id: createId(),
-      userId,
-      contactName: input.contactName,
-      phone: input.phone,
-      relationship: input.relationship,
-      createdAt: new Date().toISOString(),
+  async add(userId: string, input: z.infer<typeof addContactSchema>) {
+    const contact = await prisma.trustedContact.create({
+      data: {
+        userId,
+        contactName: input.contactName,
+        phone: input.phone,
+        relationship: input.relationship,
+      },
+    });
+
+    const mapped: TrustedContact = {
+      id: contact.id,
+      userId: contact.userId,
+      contactName: contact.contactName,
+      phone: contact.phone,
+      relationship: contact.relationship,
+      createdAt: contact.createdAt.toISOString(),
     };
 
-    store.contacts.push(contact);
-
-    const user = store.users.find((entry) => entry.id === userId);
-    if (user) {
-      user.trustedContacts.push(contact.id);
-    }
-
-    return contact;
+    return mapped;
   },
 
-  remove(userId: string, contactId: string) {
-    const index = store.contacts.findIndex((contact) => contact.id === contactId && contact.userId === userId);
+  async remove(userId: string, contactId: string) {
+    const deleted = await prisma.trustedContact.deleteMany({
+      where: { id: contactId, userId },
+    });
 
-    if (index === -1) {
+    if (deleted.count === 0) {
       throw new AppError('Trusted contact not found', 404);
-    }
-
-    store.contacts.splice(index, 1);
-
-    const user = store.users.find((entry) => entry.id === userId);
-    if (user) {
-      user.trustedContacts = user.trustedContacts.filter((entry) => entry !== contactId);
     }
   },
 };

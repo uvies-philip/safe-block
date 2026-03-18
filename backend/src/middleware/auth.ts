@@ -1,7 +1,6 @@
 import { NextFunction, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 
-import { store } from '../services/store';
 import { env } from '../utils/env';
 import { AppError } from '../utils/errors';
 
@@ -24,13 +23,7 @@ export const requireAuth = (request: Request, _response: Response, next: NextFun
 
   try {
     const payload = jwt.verify(token, env.jwtAccessSecret) as { sub: string };
-    const user = store.users.find((entry) => entry.id === payload.sub);
-
-    if (!user) {
-      throw new AppError('User not found', 401);
-    }
-
-    request.userId = user.id;
+    request.userId = payload.sub;
     next();
   } catch (error) {
     next(error instanceof AppError ? error : new AppError('Invalid or expired token', 401));

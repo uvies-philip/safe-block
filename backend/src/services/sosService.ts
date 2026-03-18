@@ -1,13 +1,13 @@
+import { SosResponderStatus } from '@prisma/client';
 import { z } from 'zod';
 
-import { SOSAlert } from '../models/types';
-import { createId } from '../utils/id';
+import { SOSAlert, SOSResponder } from '../models/types';
 import { AppError } from '../utils/errors';
 import { contactService } from './contactService';
 import { guardianService } from './guardianService';
 import { geofenceService } from './geofenceService';
 import { notificationService } from './notificationService';
-import { store } from './store';
+import { prisma } from './prisma';
 
 export const triggerSOSSchema = z.object({
   location: z.object({
@@ -22,27 +22,77 @@ export const respondSOSSchema = z.object({
   etaMinutes: z.number().int().min(1).max(240).optional(),
 });
 
+type DbAlert = {
+  id: string;
+  userId: string;
+  requesterName: string | null;
+  requesterPhone: string | null;
+  latitude: number;
+  longitude: number;
+  timestamp: Date;
+  status: 'active' | 'resolved';
+  escalationLevel: number;
+  responders: {
+    userId: string;
+    status: SosResponderStatus;
+    etaMinutes: number | null;
+    updatedAt: Date;
+  }[];
+};
+
+const mapResponder = (responder: DbAlert['responders'][number]): SOSResponder => ({
+  userId: responder.userId,
+  status: responder.status,
+  etaMinutes: responder.etaMinutes ?? undefined,
+  updatedAt: responder.updatedAt.toISOString(),
+});
+
+const toSOSAlert = (alert: DbAlert): SOSAlert => ({
+  id: alert.id,
+  userId: alert.userId,
+  requesterName: alert.requesterName ?? undefined,
+  requesterPhone: alert.requesterPhone ?? undefined,
+  location: {
+    latitude: alert.latitude,
+    longitude: alert.longitude,
+  },
+  timestamp: alert.timestamp.toISOString(),
+  status: alert.status,
+  escalationLevel: alert.escalationLevel >= 2 ? 2 : 1,
+  responders: alert.responders.map(mapResponder),
+});
+
 export const sosService = {
-  triggerSOS(userId: string, location: z.infer<typeof triggerSOSSchema>['location']) {
-    const requester = store.users.find((entry) => entry.id === userId);
+  async triggerSOS(userId: string, location: z.infer<typeof triggerSOSSchema>['location']) {
+    const requester = await prisma.user.findUnique({ where: { id: userId } });
 
-    const alert: SOSAlert = {
-      id: createId(),
-      userId,
-      requesterName: requester?.name,
-      requesterPhone: requester?.phone,
-      location,
-      timestamp: new Date().toISOString(),
-      status: 'active',
-      escalationLevel: 1,
-      responders: [],
-    };
+    const created = await prisma.sosAlert.create({
+      data: {
+        userId,
+        requesterName: requester?.name,
+        requesterPhone: requester?.phone,
+        latitude: location.latitude,
+        longitude: location.longitude,
+        status: 'active',
+        escalationLevel: 1,
+      },
+      include: {
+        responders: {
+          select: {
+            userId: true,
+            status: true,
+            etaMinutes: true,
+            updatedAt: true,
+          },
+        },
+      },
+    });
 
-    store.sosAlerts.unshift(alert);
+    const alert = toSOSAlert(created);
 
-    const trustedContacts = contactService.list(userId);
-    const nearbyUserIds = geofenceService.notifyNearbyUsers(location, 5).filter((entry) => entry !== userId);
-    const nearbyGuardians = guardianService.getNearbyGuardians(location, 2, userId);
+    const trustedContacts = await contactService.list(userId);
+    const nearbyUserIds = (await geofenceService.notifyNearbyUsers(location, 5)).filter((entry) => entry !== userId);
+    const nearbyGuardians = await guardianService.getNearbyGuardians(location, 2, userId);
 
     notificationService.sendPushNotification([], 'SOS', 'Trusted contact triggered an SOS alert', {
       sosAlertId: alert.id,
@@ -67,12 +117,39 @@ export const sosService = {
     return alert;
   },
 
-  getActiveAlerts() {
-    return store.sosAlerts.filter((entry) => entry.status === 'active');
+  async getActiveAlerts() {
+    const alerts = await prisma.sosAlert.findMany({
+      where: { status: 'active' },
+      orderBy: { timestamp: 'desc' },
+      include: {
+        responders: {
+          select: {
+            userId: true,
+            status: true,
+            etaMinutes: true,
+            updatedAt: true,
+          },
+        },
+      },
+    });
+
+    return alerts.map(toSOSAlert);
   },
 
-  resolveSOS(alertId: string, userId: string) {
-    const alert = store.sosAlerts.find((entry) => entry.id === alertId);
+  async resolveSOS(alertId: string, userId: string) {
+    const alert = await prisma.sosAlert.findUnique({
+      where: { id: alertId },
+      include: {
+        responders: {
+          select: {
+            userId: true,
+            status: true,
+            etaMinutes: true,
+            updatedAt: true,
+          },
+        },
+      },
+    });
 
     if (!alert) {
       throw new AppError('SOS alert not found', 404);
@@ -82,22 +159,60 @@ export const sosService = {
       throw new AppError('You can only resolve your own SOS alert', 403);
     }
 
-    alert.status = 'resolved';
-    return alert;
+    const updated = await prisma.sosAlert.update({
+      where: { id: alertId },
+      data: { status: 'resolved' },
+      include: {
+        responders: {
+          select: {
+            userId: true,
+            status: true,
+            etaMinutes: true,
+            updatedAt: true,
+          },
+        },
+      },
+    });
+
+    return toSOSAlert(updated);
   },
 
-  getAlertStatus(alertId: string) {
-    const alert = store.sosAlerts.find((entry) => entry.id === alertId);
+  async getAlertStatus(alertId: string) {
+    const alert = await prisma.sosAlert.findUnique({
+      where: { id: alertId },
+      include: {
+        responders: {
+          select: {
+            userId: true,
+            status: true,
+            etaMinutes: true,
+            updatedAt: true,
+          },
+        },
+      },
+    });
 
     if (!alert) {
       throw new AppError('SOS alert not found', 404);
     }
 
-    return alert;
+    return toSOSAlert(alert);
   },
 
-  respondToSOS(alertId: string, responderUserId: string, status: 'coming' | 'unable', etaMinutes?: number) {
-    const alert = store.sosAlerts.find((entry) => entry.id === alertId);
+  async respondToSOS(alertId: string, responderUserId: string, status: 'coming' | 'unable', etaMinutes?: number) {
+    const alert = await prisma.sosAlert.findUnique({
+      where: { id: alertId },
+      include: {
+        responders: {
+          select: {
+            userId: true,
+            status: true,
+            etaMinutes: true,
+            updatedAt: true,
+          },
+        },
+      },
+    });
 
     if (!alert) {
       throw new AppError('SOS alert not found', 404);
@@ -112,29 +227,44 @@ export const sosService = {
     }
 
     const existingResponder = alert.responders.find((entry) => entry.userId === responderUserId);
-    const payload = {
-      userId: responderUserId,
-      status,
-      etaMinutes,
-      updatedAt: new Date().toISOString(),
-    };
 
     if (existingResponder) {
-      existingResponder.status = payload.status;
-      existingResponder.etaMinutes = payload.etaMinutes;
-      existingResponder.updatedAt = payload.updatedAt;
+      await prisma.sosResponder.update({
+        where: {
+          alertId_userId: {
+            alertId,
+            userId: responderUserId,
+          },
+        },
+        data: {
+          status: status as SosResponderStatus,
+          etaMinutes: etaMinutes ?? null,
+          updatedAt: new Date(),
+        },
+      });
     } else {
-      alert.responders.push(payload);
+      await prisma.sosResponder.create({
+        data: {
+          alertId,
+          userId: responderUserId,
+          status: status as SosResponderStatus,
+          etaMinutes: etaMinutes ?? null,
+          updatedAt: new Date(),
+        },
+      });
 
       if (status === 'coming') {
-        guardianService.recordAssist(responderUserId);
+        await guardianService.recordAssist(responderUserId);
       }
     }
 
-    if (status === 'coming') {
-      alert.escalationLevel = 2;
+    if (status === 'coming' && alert.escalationLevel < 2) {
+      await prisma.sosAlert.update({
+        where: { id: alertId },
+        data: { escalationLevel: 2 },
+      });
     }
 
-    return alert;
+    return this.getAlertStatus(alertId);
   },
 };

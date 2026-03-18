@@ -1,26 +1,53 @@
-import { Request, Response } from 'express';
+import { NextFunction, Request, Response } from 'express';
 
 import { sosService } from '../services/sosService';
 
 export const sosController = {
-  create(request: Request, response: Response) {
-    const alert = sosService.triggerSOS(request.userId as string, request.body.location);
-    response.status(201).json(alert);
+  async create(request: Request, response: Response, next: NextFunction) {
+    try {
+      const alert = await sosService.triggerSOS(request.userId as string, request.body.location);
+      response.status(201).json(alert);
+    } catch (error) {
+      next(error);
+    }
   },
 
-  active(_request: Request, response: Response) {
-    response.json(sosService.getActiveAlerts());
+  async active(_request: Request, response: Response, next: NextFunction) {
+    try {
+      response.json(await sosService.getActiveAlerts());
+    } catch (error) {
+      next(error);
+    }
   },
 
-  resolve(request: Request, response: Response) {
-    response.json(sosService.resolveSOS(request.body.alertId, request.userId as string));
+  async resolve(request: Request, response: Response, next: NextFunction) {
+    try {
+      response.json(await sosService.resolveSOS(request.body.alertId, request.userId as string));
+    } catch (error) {
+      next(error);
+    }
   },
 
-  status(request: Request, response: Response) {
-    response.json(sosService.getAlertStatus(String(request.params.alertId)));
+  async status(request: Request, response: Response, next: NextFunction) {
+    try {
+      response.json(await sosService.getAlertStatus(String(request.params.alertId)));
+    } catch (error) {
+      next(error);
+    }
   },
 
-  respond(request: Request, response: Response) {
-    response.json(sosService.respondToSOS(request.body.alertId, request.userId as string, request.body.status, request.body.etaMinutes));
+  async respond(request: Request, response: Response, next: NextFunction) {
+    try {
+      response.json(
+        await sosService.respondToSOS(
+          request.body.alertId,
+          request.userId as string,
+          request.body.status,
+          request.body.etaMinutes
+        )
+      );
+    } catch (error) {
+      next(error);
+    }
   },
 };

@@ -1,9 +1,8 @@
 import { z } from 'zod';
 
-import { User } from '../models/types';
 import { AppError } from '../utils/errors';
 import { distanceInKilometers } from '../utils/geo';
-import { store } from './store';
+import { prisma } from './prisma';
 
 export const toggleGuardianSchema = z.object({
   available: z.boolean(),
@@ -22,11 +21,26 @@ const computeBadge = (assistCount: number): 'NONE' | 'BRONZE' | 'SILVER' | 'GOLD
   return 'NONE';
 };
 
-const toGuardianPublic = (user: User, distanceKm: number) => ({
+const toGuardianPublic = (
+  user: {
+    id: string;
+    name: string;
+    phone: string;
+    homeLatitude: number | null;
+    homeLongitude: number | null;
+    guardianAvailable: boolean;
+    guardianVerificationBadge: 'NONE' | 'BRONZE' | 'SILVER' | 'GOLD';
+    guardianAssistCount: number;
+  },
+  distanceKm: number
+) => ({
   id: user.id,
   name: user.name,
   phone: user.phone,
-  homeLocation: user.homeLocation,
+  homeLocation:
+    user.homeLatitude != null && user.homeLongitude != null
+      ? { latitude: user.homeLatitude, longitude: user.homeLongitude }
+      : null,
   guardianAvailable: user.guardianAvailable ?? false,
   guardianVerificationBadge: user.guardianVerificationBadge ?? 'NONE',
   guardianAssistCount: user.guardianAssistCount ?? 0,
@@ -34,14 +48,11 @@ const toGuardianPublic = (user: User, distanceKm: number) => ({
 });
 
 export const guardianService = {
-  setAvailability(userId: string, available: boolean) {
-    const user = store.users.find((entry) => entry.id === userId);
-
-    if (!user) {
-      throw new AppError('User not found', 404);
-    }
-
-    user.guardianAvailable = available;
+  async setAvailability(userId: string, available: boolean) {
+    const user = await prisma.user.update({
+      where: { id: userId },
+      data: { guardianAvailable: available },
+    });
 
     return {
       userId,
@@ -51,14 +62,37 @@ export const guardianService = {
     };
   },
 
-  getNearbyGuardians(location: { latitude: number; longitude: number }, radiusKm: number, excludeUserId?: string) {
-    const nearby = store.users
-      .filter((user) => user.id !== excludeUserId)
-      .filter((user) => Boolean(user.guardianAvailable))
-      .filter((user) => Boolean(user.homeLocation))
+  async getNearbyGuardians(
+    location: { latitude: number; longitude: number },
+    radiusKm: number,
+    excludeUserId?: string
+  ) {
+    const users = await prisma.user.findMany({
+      where: {
+        guardianAvailable: true,
+        homeLatitude: { not: null },
+        homeLongitude: { not: null },
+        ...(excludeUserId ? { id: { not: excludeUserId } } : {}),
+      },
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        homeLatitude: true,
+        homeLongitude: true,
+        guardianAvailable: true,
+        guardianVerificationBadge: true,
+        guardianAssistCount: true,
+      },
+    });
+
+    const nearby = users
       .map((user) => ({
         user,
-        distanceKm: distanceInKilometers(location, user.homeLocation!),
+        distanceKm: distanceInKilometers(location, {
+          latitude: user.homeLatitude!,
+          longitude: user.homeLongitude!,
+        }),
       }))
       .filter((entry) => entry.distanceKm <= radiusKm)
       .sort((a, b) => a.distanceKm - b.distanceKm)
@@ -67,21 +101,26 @@ export const guardianService = {
     return nearby;
   },
 
-  recordAssist(userId: string) {
-    const user = store.users.find((entry) => entry.id === userId);
+  async recordAssist(userId: string) {
+    const user = await prisma.user.findUnique({ where: { id: userId } });
 
     if (!user) {
       throw new AppError('User not found', 404);
     }
 
     const nextAssistCount = (user.guardianAssistCount ?? 0) + 1;
-    user.guardianAssistCount = nextAssistCount;
-    user.guardianVerificationBadge = computeBadge(nextAssistCount);
+    const updated = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        guardianAssistCount: nextAssistCount,
+        guardianVerificationBadge: computeBadge(nextAssistCount),
+      },
+    });
 
     return {
       userId,
-      guardianAssistCount: user.guardianAssistCount,
-      guardianVerificationBadge: user.guardianVerificationBadge,
+      guardianAssistCount: updated.guardianAssistCount,
+      guardianVerificationBadge: updated.guardianVerificationBadge,
     };
   },
 };

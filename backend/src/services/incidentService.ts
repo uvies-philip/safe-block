@@ -1,12 +1,12 @@
+import { IncidentType as PrismaIncidentType } from '@prisma/client';
 import { z } from 'zod';
 
 import { Incident, IncidentType } from '../models/types';
 import { distanceInKilometers } from '../utils/geo';
-import { createId } from '../utils/id';
 import { AppError } from '../utils/errors';
 import { geofenceService } from './geofenceService';
 import { notificationService } from './notificationService';
-import { store } from './store';
+import { prisma } from './prisma';
 
 const incidentTypeEnum = z.enum([
   'ROBBERY',
@@ -46,6 +46,46 @@ export const hotspotIncidentSchema = z.object({
   minIncidents: z.coerce.number().int().min(1).max(20).default(2),
 });
 
+type DbIncident = {
+  id: string;
+  type: PrismaIncidentType;
+  description: string;
+  reportedBy: string;
+  anonymous: boolean;
+  imageUri: string | null;
+  latitude: number;
+  longitude: number;
+  timestamp: Date;
+  verified: boolean;
+  upvotes: number;
+  upvotedBy: string[];
+  verificationCount: number;
+  trustScore: number;
+  reporterCredibilityScore: number;
+  verifiedBy: string[];
+};
+
+const toIncidentModel = (incident: DbIncident): Incident => ({
+  id: incident.id,
+  type: incident.type as IncidentType,
+  description: incident.description,
+  reportedBy: incident.reportedBy,
+  anonymous: incident.anonymous,
+  imageUri: incident.imageUri ?? undefined,
+  location: {
+    latitude: incident.latitude,
+    longitude: incident.longitude,
+  },
+  timestamp: incident.timestamp.toISOString(),
+  verified: incident.verified,
+  upvotes: incident.upvotes,
+  upvotedBy: incident.upvotedBy,
+  verificationCount: incident.verificationCount,
+  trustScore: incident.trustScore,
+  reporterCredibilityScore: incident.reporterCredibilityScore,
+  verifiedBy: incident.verifiedBy,
+});
+
 const recalculateTrustScore = (incident: Incident): number => {
   const ageHours = Math.max(0, (Date.now() - new Date(incident.timestamp).getTime()) / (1000 * 60 * 60));
   const stalePenalty = Math.min(30, Math.floor(ageHours / 12) * 2);
@@ -65,8 +105,11 @@ const CONSENSUS_RADIUS_KM = 0.3;
 const CONSENSUS_WINDOW_MINUTES = 90;
 const CONSENSUS_REPORTER_THRESHOLD = 3;
 
-const calculateReporterCredibilityScore = (userId: string) => {
-  const authored = store.incidents.filter((entry) => entry.reportedBy === userId);
+const calculateReporterCredibilityScore = async (userId: string) => {
+  const authored = await prisma.incident.findMany({
+    where: { reportedBy: userId },
+    select: { verified: true, upvotes: true },
+  });
 
   if (authored.length === 0) {
     return 50;
@@ -79,36 +122,51 @@ const calculateReporterCredibilityScore = (userId: string) => {
   return Math.max(0, Math.min(100, score));
 };
 
-const refreshReporterCredibility = (userId: string) => {
-  const nextCredibility = calculateReporterCredibilityScore(userId);
+const refreshReporterCredibility = async (userId: string) => {
+  const nextCredibility = await calculateReporterCredibilityScore(userId);
+  const authored = await prisma.incident.findMany({ where: { reportedBy: userId } });
 
-  for (const entry of store.incidents) {
-    if (entry.reportedBy !== userId) {
-      continue;
-    }
+  await Promise.all(
+    authored.map(async (entry) => {
+      const model = toIncidentModel(entry);
+      const trustScore = recalculateTrustScore({
+        ...model,
+        reporterCredibilityScore: nextCredibility,
+      });
 
-    entry.reporterCredibilityScore = nextCredibility;
-    entry.trustScore = recalculateTrustScore(entry);
-  }
+      await prisma.incident.update({
+        where: { id: entry.id },
+        data: {
+          reporterCredibilityScore: nextCredibility,
+          trustScore,
+        },
+      });
+    })
+  );
 };
 
-const applyConsensusVerification = (targetIncident: Incident) => {
+const applyConsensusVerification = async (targetIncident: Incident) => {
   const targetTime = new Date(targetIncident.timestamp).getTime();
   const windowMs = CONSENSUS_WINDOW_MINUTES * 60 * 1000;
 
-  const clustered = store.incidents.filter((entry) => {
-    if (entry.type !== targetIncident.type) {
-      return false;
-    }
+  const lower = new Date(targetTime - windowMs);
+  const upper = new Date(targetTime + windowMs);
 
-    const incidentTime = new Date(entry.timestamp).getTime();
-    const isWithinTimeWindow = Math.abs(targetTime - incidentTime) <= windowMs;
-    if (!isWithinTimeWindow) {
-      return false;
-    }
-
-    return distanceInKilometers(targetIncident.location, entry.location) <= CONSENSUS_RADIUS_KM;
+  const clusteredCandidates = await prisma.incident.findMany({
+    where: {
+      type: targetIncident.type as PrismaIncidentType,
+      timestamp: {
+        gte: lower,
+        lte: upper,
+      },
+    },
   });
+
+  const clustered = clusteredCandidates
+    .map(toIncidentModel)
+    .filter(
+      (entry) => distanceInKilometers(targetIncident.location, entry.location) <= CONSENSUS_RADIUS_KM
+    );
 
   const uniqueReporterIds = Array.from(new Set(clustered.map((entry) => entry.reportedBy)));
 
@@ -116,17 +174,32 @@ const applyConsensusVerification = (targetIncident: Incident) => {
     return;
   }
 
-  for (const entry of clustered) {
-    const mergedVerifiers = Array.from(new Set([...entry.verifiedBy, ...uniqueReporterIds]));
-    entry.verifiedBy = mergedVerifiers;
-    entry.verificationCount = Math.max(entry.verificationCount, mergedVerifiers.length);
-    entry.verified = true;
-    entry.trustScore = recalculateTrustScore(entry);
-  }
+  await Promise.all(
+    clustered.map(async (entry) => {
+      const mergedVerifiers = Array.from(new Set([...entry.verifiedBy, ...uniqueReporterIds]));
+      const verificationCount = Math.max(entry.verificationCount, mergedVerifiers.length);
+      const verified = true;
 
-  for (const entry of clustered) {
-    refreshReporterCredibility(entry.reportedBy);
-  }
+      const trustScore = recalculateTrustScore({
+        ...entry,
+        verifiedBy: mergedVerifiers,
+        verificationCount,
+        verified,
+      });
+
+      await prisma.incident.update({
+        where: { id: entry.id },
+        data: {
+          verifiedBy: mergedVerifiers,
+          verificationCount,
+          verified,
+          trustScore,
+        },
+      });
+    })
+  );
+
+  await Promise.all(clustered.map(async (entry) => refreshReporterCredibility(entry.reportedBy)));
 };
 
 const getTimeOfDayKey = (hour: number): 'morning' | 'afternoon' | 'evening' | 'night' => {
@@ -146,32 +219,38 @@ const getTimeOfDayKey = (hour: number): 'morning' | 'afternoon' | 'evening' | 'n
 };
 
 export const incidentService = {
-  submitIncident(userId: string, input: z.infer<typeof submitIncidentSchema>) {
-    const reporterCredibilityScore = calculateReporterCredibilityScore(userId);
+  async submitIncident(userId: string, input: z.infer<typeof submitIncidentSchema>) {
+    const reporterCredibilityScore = await calculateReporterCredibilityScore(userId);
 
-    const incident: Incident = {
-      id: createId(),
-      type: input.type as IncidentType,
-      description: input.description,
-      reportedBy: userId,
-      anonymous: input.anonymous ?? false,
-      imageUri: input.imageUri,
-      location: input.location,
-      timestamp: new Date().toISOString(),
-      verified: false,
-      upvotes: 0,
-      upvotedBy: [],
-      verificationCount: 0,
-      trustScore: 40,
-      reporterCredibilityScore,
-      verifiedBy: [],
-    };
+    const created = await prisma.incident.create({
+      data: {
+        type: input.type as PrismaIncidentType,
+        description: input.description,
+        reportedBy: userId,
+        anonymous: input.anonymous ?? false,
+        imageUri: input.imageUri,
+        latitude: input.location.latitude,
+        longitude: input.location.longitude,
+        verified: false,
+        upvotes: 0,
+        upvotedBy: [],
+        verificationCount: 0,
+        trustScore: 40,
+        reporterCredibilityScore,
+        verifiedBy: [],
+      },
+    });
 
-    store.incidents.unshift(incident);
-    applyConsensusVerification(incident);
-    refreshReporterCredibility(userId);
+    const createdModel = toIncidentModel(created);
+    await applyConsensusVerification(createdModel);
+    await refreshReporterCredibility(userId);
 
-    const nearbyUserIds = geofenceService.notifyNearbyUsers(input.location, 5);
+    const incident = await prisma.incident.findUnique({ where: { id: created.id } });
+    if (!incident) {
+      throw new AppError('Incident not found', 404);
+    }
+
+    const nearbyUserIds = await geofenceService.notifyNearbyUsers(input.location, 5);
     notificationService.sendPushNotification(
       nearbyUserIds.filter((entry) => entry !== userId),
       'INCIDENT',
@@ -179,13 +258,15 @@ export const incidentService = {
       { incidentId: incident.id }
     );
 
-    return incident;
+    return toIncidentModel(incident);
   },
 
-  fetchNearbyIncidents(latitude: number, longitude: number, radiusKm = 10, limit = 20, offset = 0) {
-    const nearby = store.incidents.filter((incident) =>
-      distanceInKilometers({ latitude, longitude }, incident.location) <= radiusKm
-    );
+  async fetchNearbyIncidents(latitude: number, longitude: number, radiusKm = 10, limit = 20, offset = 0) {
+    const incidents = await prisma.incident.findMany({ orderBy: { timestamp: 'desc' } });
+
+    const nearby = incidents
+      .map(toIncidentModel)
+      .filter((incident) => distanceInKilometers({ latitude, longitude }, incident.location) <= radiusKm);
 
     const items = nearby.slice(offset, offset + limit);
 
@@ -198,7 +279,7 @@ export const incidentService = {
     };
   },
 
-  fetchIncidentHotspots(
+  async fetchIncidentHotspots(
     latitude: number,
     longitude: number,
     radiusKm = 10,
@@ -211,13 +292,15 @@ export const incidentService = {
     const latStep = gridSizeKm / 111;
     const lonStep = gridSizeKm / (111 * Math.max(0.15, Math.cos((latitude * Math.PI) / 180)));
 
-    const candidates = store.incidents.filter((incident) => {
-      const incidentTime = new Date(incident.timestamp).getTime();
+    const incidents = await prisma.incident.findMany({
+      where: {
+        timestamp: {
+          gte: new Date(cutoff),
+        },
+      },
+    });
 
-      if (incidentTime < cutoff) {
-        return false;
-      }
-
+    const candidates = incidents.map(toIncidentModel).filter((incident) => {
       return distanceInKilometers({ latitude, longitude }, incident.location) <= radiusKm;
     });
 
@@ -300,46 +383,82 @@ export const incidentService = {
     };
   },
 
-  getIncident(incidentId: string) {
-    const incident = store.incidents.find((entry) => entry.id === incidentId);
+  async getIncident(incidentId: string) {
+    const incident = await prisma.incident.findUnique({ where: { id: incidentId } });
 
     if (!incident) {
       throw new AppError('Incident not found', 404);
     }
 
-    return incident;
+    return toIncidentModel(incident);
   },
 
-  upvoteIncident(incidentId: string, userId: string) {
-    const incident = store.incidents.find((entry) => entry.id === incidentId);
+  async upvoteIncident(incidentId: string, userId: string) {
+    const incident = await prisma.incident.findUnique({ where: { id: incidentId } });
 
     if (!incident) {
       throw new AppError('Incident not found', 404);
     }
 
-    if (!incident.upvotedBy.includes(userId)) {
-      incident.upvotedBy.push(userId);
-      incident.upvotes += 1;
+    let nextUpvotedBy = incident.upvotedBy;
+    let nextUpvotes = incident.upvotes;
+
+    if (!nextUpvotedBy.includes(userId)) {
+      nextUpvotedBy = [...nextUpvotedBy, userId];
+      nextUpvotes += 1;
     }
 
-    refreshReporterCredibility(incident.reportedBy);
-    return incident;
+    const updated = await prisma.incident.update({
+      where: { id: incidentId },
+      data: {
+        upvotedBy: nextUpvotedBy,
+        upvotes: nextUpvotes,
+      },
+    });
+
+    await refreshReporterCredibility(updated.reportedBy);
+    const refreshed = await prisma.incident.findUnique({ where: { id: incidentId } });
+
+    if (!refreshed) {
+      throw new AppError('Incident not found', 404);
+    }
+
+    return toIncidentModel(refreshed);
   },
 
-  verifyIncident(incidentId: string, userId: string) {
-    const incident = store.incidents.find((entry) => entry.id === incidentId);
+  async verifyIncident(incidentId: string, userId: string) {
+    const incident = await prisma.incident.findUnique({ where: { id: incidentId } });
 
     if (!incident) {
       throw new AppError('Incident not found', 404);
     }
 
-    if (!incident.verifiedBy.includes(userId)) {
-      incident.verifiedBy.push(userId);
-      incident.verificationCount += 1;
+    let nextVerifiedBy = incident.verifiedBy;
+    let nextVerificationCount = incident.verificationCount;
+
+    if (!nextVerifiedBy.includes(userId)) {
+      nextVerifiedBy = [...nextVerifiedBy, userId];
+      nextVerificationCount += 1;
     }
 
-    incident.verified = incident.verificationCount >= 3;
-    refreshReporterCredibility(incident.reportedBy);
-    return incident;
+    const verified = nextVerificationCount >= 3;
+
+    const updated = await prisma.incident.update({
+      where: { id: incidentId },
+      data: {
+        verifiedBy: nextVerifiedBy,
+        verificationCount: nextVerificationCount,
+        verified,
+      },
+    });
+
+    await refreshReporterCredibility(updated.reportedBy);
+    const refreshed = await prisma.incident.findUnique({ where: { id: incidentId } });
+
+    if (!refreshed) {
+      throw new AppError('Incident not found', 404);
+    }
+
+    return toIncidentModel(refreshed);
   },
 };

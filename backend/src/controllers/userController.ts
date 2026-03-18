@@ -1,10 +1,8 @@
-import { Request, Response } from 'express';
+import { NextFunction, Request, Response } from 'express';
 import { z } from 'zod';
 
 import { authService } from '../services/authService';
 import { guardianService } from '../services/guardianService';
-import { store } from '../services/store';
-import { AppError } from '../utils/errors';
 
 const updateProfileSchema = z.object({
   name: z.string().min(2).optional(),
@@ -20,33 +18,49 @@ const updateProfileSchema = z.object({
 });
 
 export const userController = {
-  profile(request: Request, response: Response) {
-    response.json(authService.getProfile(request.userId as string));
-  },
-
-  update(request: Request, response: Response) {
-    const parsed = updateProfileSchema.parse(request.body);
-    const user = store.users.find((entry) => entry.id === request.userId);
-
-    if (!user) {
-      throw new AppError('User not found', 404);
+  async profile(request: Request, response: Response, next: NextFunction) {
+    try {
+      response.json(await authService.getProfile(request.userId as string));
+    } catch (error) {
+      next(error);
     }
-
-    Object.assign(user, parsed);
-    response.json(authService.getProfile(user.id));
   },
 
-  setGuardianAvailability(request: Request, response: Response) {
-    response.json(guardianService.setAvailability(request.userId as string, Boolean(request.body.available)));
+  async update(request: Request, response: Response, next: NextFunction) {
+    try {
+      const parsed = updateProfileSchema.parse(request.body);
+      response.json(
+        await authService.updateProfile(request.userId as string, {
+          name: parsed.name,
+          phone: parsed.phone,
+          photoUrl: parsed.photoUrl,
+          homeLocation: parsed.homeLocation,
+        })
+      );
+    } catch (error) {
+      next(error);
+    }
   },
 
-  nearbyGuardians(request: Request, response: Response) {
-    response.json(
-      guardianService.getNearbyGuardians(
-        { latitude: Number(request.query.latitude), longitude: Number(request.query.longitude) },
-        request.query.radiusKm ? Number(request.query.radiusKm) : 2,
-        request.userId as string
-      )
-    );
+  async setGuardianAvailability(request: Request, response: Response, next: NextFunction) {
+    try {
+      response.json(await guardianService.setAvailability(request.userId as string, Boolean(request.body.available)));
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  async nearbyGuardians(request: Request, response: Response, next: NextFunction) {
+    try {
+      response.json(
+        await guardianService.getNearbyGuardians(
+          { latitude: Number(request.query.latitude), longitude: Number(request.query.longitude) },
+          request.query.radiusKm ? Number(request.query.radiusKm) : 2,
+          request.userId as string
+        )
+      );
+    } catch (error) {
+      next(error);
+    }
   },
 };

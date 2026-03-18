@@ -3,9 +3,9 @@ import jwt from 'jsonwebtoken';
 import { z } from 'zod';
 
 import { PublicUser, User } from '../models/types';
-import { createId } from '../utils/id';
 import { env } from '../utils/env';
 import { AppError } from '../utils/errors';
+import { prisma } from './prisma';
 import { store } from './store';
 
 export const registerSchema = z.object({
@@ -21,18 +21,41 @@ export const loginSchema = z.object({
   password: z.string().min(8),
 });
 
-const toPublicUser = (user: User): PublicUser => ({
+const toPublicUser = (
+  user: {
+    id: string;
+    name: string;
+    phone: string;
+    email: string;
+    photoUrl: string;
+    homeLatitude: number | null;
+    homeLongitude: number | null;
+    guardianAvailable: boolean;
+    guardianVerificationBadge: 'NONE' | 'BRONZE' | 'SILVER' | 'GOLD';
+    guardianAssistCount: number;
+    createdAt: Date;
+    trustedContacts: { id: string }[];
+  } | User
+): PublicUser => ({
   id: user.id,
   name: user.name,
   phone: user.phone,
   email: user.email,
   photoUrl: user.photoUrl,
-  homeLocation: user.homeLocation,
-  trustedContacts: user.trustedContacts,
+  homeLocation:
+    'homeLocation' in user
+      ? user.homeLocation
+      : user.homeLatitude != null && user.homeLongitude != null
+        ? { latitude: user.homeLatitude, longitude: user.homeLongitude }
+        : null,
+  trustedContacts:
+    'trustedContacts' in user && Array.isArray(user.trustedContacts)
+      ? user.trustedContacts.map((entry) => (typeof entry === 'string' ? entry : entry.id))
+      : [],
   guardianAvailable: user.guardianAvailable ?? false,
   guardianVerificationBadge: user.guardianVerificationBadge ?? 'NONE',
   guardianAssistCount: user.guardianAssistCount ?? 0,
-  createdAt: user.createdAt,
+  createdAt: user.createdAt instanceof Date ? user.createdAt.toISOString() : user.createdAt,
 });
 
 const createTokens = (userId: string) => {
@@ -45,29 +68,28 @@ const createTokens = (userId: string) => {
 
 export const authService = {
   async register(input: z.infer<typeof registerSchema>) {
-    const existingUser = store.users.find((user) => user.email.toLowerCase() === input.email.toLowerCase());
+    const email = input.email.toLowerCase();
+    const existingUser = await prisma.user.findUnique({ where: { email } });
 
     if (existingUser) {
       throw new AppError('Email is already registered', 409);
     }
 
     const passwordHash = await bcrypt.hash(input.password, 10);
-    const user: User = {
-      id: createId(),
-      name: input.name,
-      phone: input.phone,
-      email: input.email.toLowerCase(),
-      photoUrl: input.photoUrl ?? '',
-      passwordHash,
-      homeLocation: null,
-      trustedContacts: [],
-      guardianAvailable: false,
-      guardianVerificationBadge: 'NONE',
-      guardianAssistCount: 0,
-      createdAt: new Date().toISOString(),
-    };
-
-    store.users.push(user);
+    const user = await prisma.user.create({
+      data: {
+        name: input.name,
+        phone: input.phone,
+        email,
+        photoUrl: input.photoUrl ?? '',
+        passwordHash,
+      },
+      include: {
+        trustedContacts: {
+          select: { id: true },
+        },
+      },
+    });
 
     return {
       user: toPublicUser(user),
@@ -76,7 +98,14 @@ export const authService = {
   },
 
   async login(input: z.infer<typeof loginSchema>) {
-    const user = store.users.find((entry) => entry.email.toLowerCase() === input.email.toLowerCase());
+    const user = await prisma.user.findUnique({
+      where: { email: input.email.toLowerCase() },
+      include: {
+        trustedContacts: {
+          select: { id: true },
+        },
+      },
+    });
 
     if (!user) {
       throw new AppError('Invalid email or password', 401);
@@ -98,12 +127,51 @@ export const authService = {
     store.refreshTokens.delete(refreshToken);
   },
 
-  getProfile(userId: string) {
-    const user = store.users.find((entry) => entry.id === userId);
+  async getProfile(userId: string) {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      include: {
+        trustedContacts: {
+          select: { id: true },
+        },
+      },
+    });
 
     if (!user) {
       throw new AppError('User not found', 404);
     }
+
+    return toPublicUser(user);
+  },
+
+  async updateProfile(
+    userId: string,
+    updates: {
+      name?: string;
+      phone?: string;
+      photoUrl?: string;
+      homeLocation?: { latitude: number; longitude: number } | null;
+    }
+  ) {
+    const user = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        ...(updates.name !== undefined ? { name: updates.name } : {}),
+        ...(updates.phone !== undefined ? { phone: updates.phone } : {}),
+        ...(updates.photoUrl !== undefined ? { photoUrl: updates.photoUrl } : {}),
+        ...(updates.homeLocation !== undefined
+          ? {
+              homeLatitude: updates.homeLocation?.latitude ?? null,
+              homeLongitude: updates.homeLocation?.longitude ?? null,
+            }
+          : {}),
+      },
+      include: {
+        trustedContacts: {
+          select: { id: true },
+        },
+      },
+    });
 
     return toPublicUser(user);
   },
